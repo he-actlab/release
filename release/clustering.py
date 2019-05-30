@@ -1,3 +1,5 @@
+""" clustering and sample reconstruction """
+
 # p0 and p1 are tuples
 def distance(p0, p1):
     return np.sum((np.array(p0) - np.array(p1))**2).astype(float)
@@ -5,7 +7,7 @@ def distance(p0, p1):
 def clustering(points, k, max_iter=100):
     # initialize centroids and clusters
     centroids = [points[i] for i in np.random.randint(len(points), size=k)]
-
+    
     cluster = [0] * len(points)
     prev_cluster = [-1] * len(points)
 
@@ -19,7 +21,7 @@ def clustering(points, k, max_iter=100):
         prev_cluster = list(cluster)
         force_recalculation = False
         i += 1
-
+        
         # update cluster
         for p in range(0, len(points)):
             min_dist = float("inf")
@@ -63,13 +65,11 @@ def clustering(points, k, max_iter=100):
     return centroids, cluster, loss
 
 # two strategy possible
-# (1) mode of each dimension
-# (2) NN
 def get_samples(points, dims, good_dims, centroids, cluster):
     samples = []
     for c in range(0, len(centroids)):
         #print centroids[c]
-
+        
         # find members
         members = []
         for p in range(0, len(points)):
@@ -82,11 +82,11 @@ def get_samples(points, dims, good_dims, centroids, cluster):
         if len(members) == 0:
             for d in range(0, len(points[0])):
                 sample_dims[d] = range(0, dims[d])
-        else:
+        else:    
             for d in range(0, len(points[0])):
                 if d in good_dims:
                     continue
-
+                
                 if d not in sample_dims:
                     sample_dims[d] = []
 
@@ -99,7 +99,7 @@ def get_samples(points, dims, good_dims, centroids, cluster):
             if d in good_dims:
                 sample.append(centroids[c][list(good_dims).index(d)])
                 continue
-
+            
             # deterministic
             #sample.append(max(set(sample_dims[d]), key=sample_dims[d].count))
 
@@ -117,7 +117,7 @@ def get_samples(points, dims, good_dims, centroids, cluster):
         #print sample_dims
         #for d in sample_dims:
         #    print max(set(sample_dims[d]), key=sample_dims[d].count)
-
+    
         #print sample
     #print len(samples)
 

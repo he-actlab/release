@@ -1,3 +1,7 @@
+# pylint: disable=consider-using-enumerate, invalid-name
+
+""" RL-based search agent """
+
 import heapq
 import logging
 import time
@@ -5,11 +9,16 @@ import time
 import numpy as np
 import tensorflow as tf
 
-from ..util import sample_ints
-from .model_based_tuner import ModelOptimizer, knob2point, point2knob
-from .ppo import ppo_core
+import sys
+sys.path.append('../autotvm/tuner')
+sys.path.append('../autotvm')
+from util import sample_ints
+from model_based_tuner import ModelOptimizer, knob2point, point2knob
+from ppo import ppo
 
-class ReinforcementLearningOptimizer(ModelOptimizer):
+logger = logging.getLogger('autotvm')
+
+class ReinforcementLearningSearch(ModelOptimizer):
     """parallel reinforcement learning optimization algorithm"""
     def __init__(self, task, n_iter=500, temp=(1, 0), persistent=False, parallel_size=128,
                  early_stop=50, log_interval=50):
@@ -29,7 +38,13 @@ class ReinforcementLearningOptimizer(ModelOptimizer):
         self.obs_space = (len(self.dims), )
         self.act_space = [3] * len(self.dims)
 
-        # NOTE this seems to cause hang after few tasks...
+        """
+        print('[Build Agent]')        
+        print('search space: {}'.format(self.dims))
+        print('observation : {}'.format(self.obs_space))
+        print('action space: {}'.format(self.act_space))
+        """
+
         sess = tf.get_default_session()
         if sess != None:
             sess.close()
@@ -45,21 +60,19 @@ class ReinforcementLearningOptimizer(ModelOptimizer):
                                        batch_size=32,
                                        gamma=0.9,
                                        lmbd=0.99,
-                                       clip_value=0.3,
+                                       clip_value=0.2,
                                        value_coeff=1.0,
-                                       entropy_coeff=0.1)
+                                       entropy_coeff=0.3)
 
     def find_maximums(self, model, num, exclusive):
         temp, n_iter, early_stop, log_interval = \
                 self.temp, self.n_iter, self.early_stop, self.log_interval
 
         start = time.time()
-
         if self.persistent and self.points is not None:
             points = self.points
         else:
             points = np.array(sample_ints(0, len(self.task.config_space), self.parallel_size))
-
         scores = model.predict(points)
 
         # build heap and insert initial points
@@ -73,37 +86,39 @@ class ReinforcementLearningOptimizer(ModelOptimizer):
                 pop = heapq.heapreplace(heap_items, (s, p))
                 in_heap.remove(pop[1])
                 in_heap.add(p)
-
         avg_k = 0
-
+        
+        # run rl_walk using points --> 128 of them
+        #print('- begin optimization')
         for i, p in enumerate(points):
             k = 0
 
             # create buffer which will be used to save trajectory
             new_points = []
             new_scores = []
+
             point = p
             good = True
-
+            #print('walk begin')
             while k < n_iter and good == True:
                 # action
                 new_point, good = rl_walk(point, self.dims, self.agent)
                 good = good or (k <= 128)
-
+                
                 new_points.append(int(new_point))
-
                 point = new_point
-
+                
                 k += 1
-
-           pad = False
+            #print('walk end')
+            
+            pad = False
             if len(new_points) < 150:
                 orig_len = len(new_points)
                 pad = True
                 new_points = new_points + [0] * (150 - orig_len)
 
             new_scores = model.predict(new_points)
-
+            
             if pad == True:
                 new_points = new_points[0:orig_len]
                 new_scores = new_scores[0:orig_len]
@@ -116,21 +131,18 @@ class ReinforcementLearningOptimizer(ModelOptimizer):
                     pop = heapq.heapreplace(heap_items, (s, p))
                     in_heap.remove(pop[1])
                     in_heap.add(p)
-
-        search_iterations = avg_k / len(points)
-
+        #print('- end optimization')
+        
         heap_items.sort(key=lambda item: -item[0])
-
         if self.persistent:
             self.points = points
         end = time.time()
-        
+
         return [x[1] for x in heap_items]
 
 def rl_walk(p, dims, agent):
     n_dims = len(dims)
-    n_dims_thres = n_dims * 0.75 #### MAGIC NUMBER
-
+    n_dims_thres = n_dims * 0.75
     good_cnt = 0
 
     # transform to knob form
@@ -142,7 +154,7 @@ def rl_walk(p, dims, agent):
 
     # get action
     action, value = agent.action(observation)
-
+    
     # for each action, make movements
     for i, a in enumerate(action):
         if a == 0:
@@ -160,8 +172,8 @@ def rl_walk(p, dims, agent):
                 good_cnt += 1
         else:
             print('Error')
-
-   if good_cnt < n_dims_thres:
+    
+    if good_cnt < n_dims_thres:
         good = True
     else:
         good = False

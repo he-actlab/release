@@ -1,12 +1,9 @@
+""" Proximal Policy Optimization (PPO) """
+
 import tensorflow as tf
 import numpy as np
 import copy
 import time
-
-"""
-act_space will be represented using list.
-5 dimension of 12, 3, 5, 6, 8 will be represented by 
-"""
 
 class PolicyWithValue:
     def __init__(self, observation_space, action_space, name, temp=0.1):
@@ -44,7 +41,7 @@ class PolicyWithValue:
 
             self.scope = tf.get_variable_scope().name
     
-    def _get_action(self, sess, obs, stochastic=True):
+    def _get_action(self, sess, obs, stochastic=False):
         if stochastic:
             return sess.run([self.act_stochastic, self.v_preds], feed_dict={self.obs: obs})
         else:
@@ -57,8 +54,10 @@ class PPOAgent:
     def __init__(self, policy, old_policy, horizon, learning_rate, epochs, 
                  batch_size, gamma, lmbd, clip_value, value_coeff, entropy_coeff):
 
-        print('open session')
+        #print('open session')
+        # FIXME no gpu
         self.sess = tf.Session()
+        #self.sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
         current_time = int(time.time())
         self.writer = tf.summary.FileWriter('./log/train_'+str(current_time), self.sess.graph)
 
@@ -72,7 +71,8 @@ class PPOAgent:
 
         self.gamma = gamma
         self.lmbd = lmbd
-
+        
+        """
         print('horizon       : {}'.format(self.horizon))
         print('batch_size    : {}'.format(self.batch_size))
         print('epochs        : {}'.format(self.epochs))
@@ -80,6 +80,7 @@ class PPOAgent:
 
         print('gamma         : {}'.format(self.gamma))
         print('lambda        : {}'.format(self.lmbd))
+        """
 
         self.iteration = 0
         self.list_observations = []
@@ -341,7 +342,7 @@ class PPOAgent:
         self.sess.run(self.assign_ops)
 
     def _close_session(self):
-        print('reset graph')
+        #print('reset graph')
         tf.reset_default_graph()
-        print('close session')
+        #print('close session')
         self.sess.close()
