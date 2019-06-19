@@ -1,10 +1,20 @@
-""" clustering and sample reconstruction """
+"""
+kmeans.py: implementation of kmeans
+
+* implementation based on https://gist.github.com/pmsosa/5454ade527adbee105dd51066ef30c5f
+"""
+
+__author__     = "Byung Hoon Ahn"
+__email__      = "bhahn@eng.ucsd.edu"
+
+import numpy as np
+import random
 
 # p0 and p1 are tuples
 def distance(p0, p1):
     return np.sum((np.array(p0) - np.array(p1))**2).astype(float)
 
-def clustering(points, k, max_iter=100):
+def kmeans(points, k, max_iter=100):
     # initialize centroids and clusters
     centroids = [points[i] for i in np.random.randint(len(points), size=k)]
     
@@ -63,62 +73,3 @@ def clustering(points, k, max_iter=100):
         loss += distance(points[p], centroids[cluster[p]])
 
     return centroids, cluster, loss
-
-# two strategy possible
-def get_samples(points, dims, good_dims, centroids, cluster):
-    samples = []
-    for c in range(0, len(centroids)):
-        #print centroids[c]
-        
-        # find members
-        members = []
-        for p in range(0, len(points)):
-            if cluster[p] == c:
-                members.append(points[p])
-        #print members
-
-        # calculate other coordinates
-        sample_dims = {}
-        if len(members) == 0:
-            for d in range(0, len(points[0])):
-                sample_dims[d] = range(0, dims[d])
-        else:    
-            for d in range(0, len(points[0])):
-                if d in good_dims:
-                    continue
-                
-                if d not in sample_dims:
-                    sample_dims[d] = []
-
-                for m in members:
-                    sample_dims[d].append(m[d])
-
-        # construct sample
-        sample = []
-        for d in range(0, len(points[0])):
-            if d in good_dims:
-                sample.append(centroids[c][list(good_dims).index(d)])
-                continue
-            
-            # deterministic
-            #sample.append(max(set(sample_dims[d]), key=sample_dims[d].count))
-
-            # sampling
-            sample.append(random.sample(sample_dims[d], 1)[0])
-
-        done = False
-        while done is False:
-            if sample not in samples:
-                samples.append(sample)
-                done = True
-            else:
-                sample = random.sample(points, 1)[0]
-
-        #print sample_dims
-        #for d in sample_dims:
-        #    print max(set(sample_dims[d]), key=sample_dims[d].count)
-    
-        #print sample
-    #print len(samples)
-
-    return samples

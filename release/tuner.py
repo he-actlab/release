@@ -86,7 +86,6 @@ class Tuner(object):
             result for measurement
         """
 
-
     def tune(self, n_trial, measure_option, early_stopping=None, callbacks=()):
         """Begin tuning
 
@@ -148,6 +147,105 @@ class Tuner(object):
             self.ttl = min(early_stopping + self.best_iter, n_trial) - i
 
             self.update(inputs, results)
+            for callback in callbacks:
+                callback(self, inputs, results)
+
+            if i >= self.best_iter + early_stopping:
+                logger.debug("Early stopped. Best iter: %d.", self.best_iter)
+                break
+
+            if error_ct > 150:
+                logging.basicConfig()
+                logger.warning("Too many errors happen in the tuning. Now is in debug mode")
+                logger.setLevel(logging.DEBUG)
+            else:
+                logger.setLevel(old_level)
+
+        GLOBAL_SCOPE.in_tuning = False
+        del measure_batch
+
+    """ Byung Hoon Ahn (bhahn@eng.ucsd.edu) """
+    def tune_adaptive(self, n_iter, measure_option, early_stopping=None, callbacks=()):
+        """Begin tuning
+
+        Parameters
+        ----------
+        n_trial: int
+            Maximum number of configs to try (measure on real hardware)
+        measure_option: dict
+            The options for how to measure generated code.
+            You should use the return value ot autotvm.measure_option for this argument.
+        early_stopping: int, optional
+            Early stop the tuning when not finding better configs in this number of trials
+        callbacks: List of callable
+            A list of callback functions. The signature of callback function is
+            (Tuner, List of MeasureInput, List of MeasureResult)
+            with no return value. These callback functions will be called on
+            every measurement pair. See autotvm/tuner/callback.py for some examples.
+        """
+        measure_batch = create_measure_batch(self.task, measure_option)
+        n_parallel = getattr(measure_batch, 'n_parallel', 1)
+
+        # override whatever with None for adaptive version of tune
+        early_stopping = None
+        # plan size is 64 as default for now
+        plan_size = 64
+        n_trial = n_iter * plan_size
+
+        early_stopping = early_stopping or 1e9
+        self.n_trial = n_trial
+        self.n_iter = n_iter
+        self.early_stopping = early_stopping
+        
+        """
+        # print current config
+        print('n_iter         : {}'.format(n_iter))
+        print('plan_size      : {}'.format(plan_size))
+        print('n_trial        : {}'.format(n_trial))
+        print('early_stopping : {}'.format(early_stopping))
+        """
+
+        old_level = logger.level
+
+        GLOBAL_SCOPE.in_tuning = True
+        i = error_ct = 0
+        j = 0
+        while j < n_iter and i < n_trial:
+            if not self.has_next():
+                break
+
+            configs = self.next_batch_adaptive(min(n_parallel, n_trial - i))
+
+            inputs = [MeasureInput(self.task.target, self.task, config) for config in configs]
+            results = measure_batch(inputs)
+
+            # keep best config
+            for k, (inp, res) in enumerate(zip(inputs, results)):
+                config = inp.config
+                if res.error_no == 0:
+                    flops = inp.task.flop / np.mean(res.costs)
+                    error_ct = 0
+                else:
+                    flops = 0
+                    error_ct += 1
+
+                if flops > self.best_flops:
+                    self.best_flops = flops
+                    self.best_config = config
+                    self.best_measure_pair = (inp, res)
+                    self.best_iter = i + k
+
+                logger.debug("No: %d\tGFLOPS: %.2f/%.2f\tresult: %s\t%s",
+                             i + k + 1, flops / 1e9, self.best_flops / 1e9,
+                             res, config)
+
+            i += len(results)
+            self.ttl = min(early_stopping + self.best_iter, n_trial) - i
+
+            updated = self.update_adaptive(inputs, results)
+            if updated == True:
+                j += 1
+
             for callback in callbacks:
                 callback(self, inputs, results)
 

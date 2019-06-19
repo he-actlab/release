@@ -1,19 +1,33 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 # pylint: disable=no-else-return,invalid-name,consider-using-enumerate,abstract-method
-
-""" Adaptive Sampling Module """
-
-from clustering import *
-
+"""Base class for model-based tuner
+This type of tuner will fit a cost model and use some optimization methods to
+find optimums points of cost model in space.
+"""
 import gc
 
-import time
 import numpy as np
-import random
 
-sys.path.append('../autotvm/tuner')
-from tuner import Tuner
-sys.path.append('../autotvm')
-from env import GLOBAL_SCOPE
+from .clustering.kmeans import kmeans, test
+from .sampling_util import get_samples
+
+from .tuner import Tuner
+from ..env import GLOBAL_SCOPE
 
 class FeatureCache(object):
     """Feature cache manager for cache sharing between different cost models"""
@@ -63,6 +77,7 @@ class FeatureCache(object):
         del self.feature_cache[key]
         self.feature_cache[key] = {}
         gc.collect()
+
 
 class CostModel(object):
     """Cost model to predict the speed of a config"""
@@ -134,7 +149,31 @@ class CostModel(object):
         """
         raise NotImplementedError()
 
-class AdaptiveModelBasedTuner(Tuner):
+
+class ModelOptimizer(object):
+    """Optimizer used to find optimal points of cost model"""
+    def __init__(self):
+        pass
+
+    def find_maximums(self, model, num, exclusive):
+        """Find maximum of a cost model
+
+        Note we use cost model to predict GFLOPS, so we should find the maximum
+
+        Parameters
+        ----------
+        model: CostModel
+            Cost model
+        num: int
+            The number of returned maximum points
+        exclusive: set, optional
+            The excluded set of this optimizer. Return results won't include any
+            elements in this set.
+        """
+        raise NotImplementedError()
+
+
+class ModelBasedTuner(Tuner):
     """Base class for model based tuner
     This type of tuner will fit a cost model and use an optimizer to
     find the maximums of the cost model as next trials
@@ -173,8 +212,6 @@ class AdaptiveModelBasedTuner(Tuner):
         if self.diversity_filter_ratio:
             assert self.diversity_filter_ratio >= 1, "Diversity filter ratio " \
                                                      "must be larger than one"
-        self.adaptive = True
-        self.all = plan_size
 
         # trial plan
         self.trials = []
@@ -187,12 +224,46 @@ class AdaptiveModelBasedTuner(Tuner):
         self.flops_max = 0.0
         self.train_ct = 0
 
-    def next_batch(self, batch_size, adaptive=False):
+        """ Byung Hoon Ahn (bhahn@eng.ucsd.edu) """
+        # record number of elements after sampling
+        self.all = plan_size
+
+    def next_batch(self, batch_size):
         ret = []
 
-        if adaptive == True:
-            self.diversity_filter_ratio = 2
-            self.adaptive = True
+        counter = 0
+        while counter < batch_size:
+            if len(self.visited) >= len(self.space):
+                break
+
+            while self.trial_pt < len(self.trials):
+                index = self.trials[self.trial_pt]
+                if index not in self.visited:
+                    break
+                self.trial_pt += 1
+
+            if self.trial_pt >= len(self.trials) - int(0.05 * self.plan_size):
+                # if the trial list is empty or
+                # the tuner is doing the last 5% trials (e-greedy), choose randomly
+                index = np.random.randint(len(self.space))
+                while index in self.visited:
+                    index = np.random.randint(len(self.space))
+
+            ret.append(self.space.get(index))
+            self.visited.add(index)
+
+            counter += 1
+        return ret
+
+    """ Byung Hoon Ahn (bhahn@eng.ucsd.edu) """
+    def next_batch_adaptive(self, batch_size):
+        ret = []
+
+        # "Learning to Optimize Tensor Programs" states that diversity
+        # does not affect performance, diversity_filter_ratio of 2 works
+        # well with our adaptive sampling.
+        # TODO further experimentation
+        self.diversity_filter_ratio = 2
 
         counter = 0
         while counter < batch_size:
@@ -219,7 +290,39 @@ class AdaptiveModelBasedTuner(Tuner):
         return ret
 
     def update(self, inputs, results):
-        updated = 0
+        for inp, res in zip(inputs, results):
+            index = inp.config.index
+            if res.error_no == 0:
+                self.xs.append(index)
+                flops = inp.task.flop / np.mean(res.costs)
+                self.flops_max = max(self.flops_max, flops)
+                self.ys.append(flops)
+            else:
+                self.xs.append(index)
+                self.ys.append(0.0)
+
+        # if we have enough new training samples
+        if len(self.xs) >= self.plan_size * (self.train_ct + 1) \
+                and self.flops_max > 1e-6:
+            self.cost_model.fit(self.xs, self.ys, self.plan_size)
+            if self.diversity_filter_ratio:
+                candidate = self.model_optimizer.find_maximums(
+                    self.cost_model, self.plan_size * self.diversity_filter_ratio, self.visited)
+                scores = self.cost_model.predict(candidate)
+                knobs = [point2knob(x, self.dims) for x in candidate]
+                pick_index = submodular_pick(0 * scores, knobs, self.plan_size, knob_weight=1)
+                maximums = np.array(candidate)[pick_index]
+            else:
+                maximums = self.model_optimizer.find_maximums(
+                    self.cost_model, self.plan_size, self.visited)
+
+            self.trials = maximums
+            self.trial_pt = 0
+            self.train_ct += 1
+
+    """ Byung Hoon Ahn (bhahn@eng.ucsd.edu) """
+    def update_adaptive(self, inputs, results):
+        updated = False
 
         for inp, res in zip(inputs, results):
             index = inp.config.index
@@ -232,11 +335,11 @@ class AdaptiveModelBasedTuner(Tuner):
                 self.xs.append(index)
                 self.ys.append(0.0)
 
-        if len(self.xs) >= self.all \
-                and self.flops_max > 1e-6:
-
+        # if we have enough new training samples
+        #if len(self.xs) >= self.plan_size * (self.train_ct + 1) \
+        #        and self.flops_max > 1e-6:
+        if len(self.xs) >= self.all and self.flops_max > 1e6:
             self.cost_model.fit(self.xs, self.ys, self.plan_size)
-            start_time = time.time()
             if self.diversity_filter_ratio:
                 candidate = self.model_optimizer.find_maximums(
                     self.cost_model, self.plan_size * self.diversity_filter_ratio, self.visited)
@@ -247,37 +350,38 @@ class AdaptiveModelBasedTuner(Tuner):
             else:
                 maximums = self.model_optimizer.find_maximums(
                     self.cost_model, self.plan_size, self.visited)
-            
-            # crux of adaptive sampling
-            if self.adaptive == True:
-                no_d = 2
-                dims = self.dims
-                good_dims = np.argsort(-np.array(dims))[:no_d]
+
+            # perform sampling by clustering using # of representative dimensions
+            no_dimensions = 2
+            constant = 2.5
+
+            dims = self.dims
+            effective_dims = np.argsort(-np.array(dims))[:no_dimensions]
+
+            points = [point2knob(config, self.dims) for config in maximums]
+            samples = [tuple(np.array(point)[effective_dims]) for point in points]
+
+            # start with arbitrarily large loss
+            last_loss = 99999999
+            for k in range(8, 65, 8):
+                centroids, cluster, loss = kmeans(samples, k)
                 
-                points = [point2knob(config, self.dims) for config in maximums]
-                samples = [tuple(np.array(point)[good_dims]) for point in points]
+                # constant was determined through experimentation
+                if loss >= last_loss / constant:
+                    break
+                else:
+                    last_loss = loss
 
-                last_loss = 99999999
-                for k in range(8, 65, 8):
-                    centroids, cluster, loss = clustering(samples, k)
-                    
-                    if loss >= last_loss / 2.5:
-                        break
-                    else:
-                        last_loss = loss
-                updated = 1
+            updated = True
 
-                reduced_samples = get_samples(points, dims, good_dims, centroids, cluster)
-                maximums = [knob2point(sample, dims) for sample in reduced_samples]
+            reduced_samples = get_samples(points, dims, effective_dims, centroids, cluster)
+            maximums = [knob2point(sample, dims) for sample in reduced_samples]
 
             self.trials = maximums
+            self.all += len(self.trials)
             self.trial_pt = 0
             self.train_ct += 1
 
-            if self.adaptive == True:
-                #print('samples = ', len(self.trials), 'loss = ', loss)
-                self.all += len(self.trials)
-        
         return updated
 
     def load_history(self, data_set):
@@ -368,4 +472,3 @@ def submodular_pick(scores, knobs, n_pick, knob_weight=1.0):
             knobs_set[i].add(knobs[max_x][i])
 
     return ret
-

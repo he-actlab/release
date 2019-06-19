@@ -14,10 +14,18 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Distributed executor infrastructure to scale up the tuning"""
+"""
+A tuner takes a task as input. It proposes some promising :any:`ConfigEntity`
+in the :any:`ConfigSpace` and measure them on the real hardware. Then it
+proposed the next batch of :any:`ConfigEntity` according to the measure results.
+This tuning loop is repeated.
+"""
 
-from .measure import MeasureInput, MeasureResult, MeasureErrorNo, measure_option, \
-    create_measure_batch
-from .measure_methods import LocalBuilder, LocalRunner, RPCRunner, request_remote
-from .executor import Executor
-from .local_executor import LocalExecutor
+from . import callback
+from . import sampling_util
+
+from .tuner import Tuner
+
+from .gridsearch_tuner import GridSearchTuner, RandomTuner
+from .ga_tuner import GATuner
+from .xgboost_tuner import XGBTuner
